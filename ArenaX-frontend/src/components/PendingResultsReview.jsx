@@ -207,19 +207,40 @@ function PendingResultsReview({ tournamentId, onRefreshData, onToast }) {
 
             <form onSubmit={handleConfirmVerify} className="space-y-4 pt-2">
               <div>
-                <label className="mb-1 block text-xs font-semibold text-zinc-300">Winner Registration ID</label>
-                <input
-                  type="number"
-                  value={editWinnerId}
-                  onChange={(e) => setEditWinnerId(e.target.value)}
-                  required
-                  className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3.5 py-2.5 text-xs text-white outline-none focus:border-red-500"
-                />
+                <label className="mb-1 block text-xs font-semibold text-zinc-300">
+                  Winning Team <span className="text-red-500">*</span>
+                </label>
+                {selectedResult.participants && selectedResult.participants.length > 0 ? (
+                  <select
+                    value={editWinnerId}
+                    onChange={(e) => setEditWinnerId(e.target.value)}
+                    required
+                    className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3.5 py-2.5 text-xs text-white outline-none focus:border-red-500"
+                  >
+                    <option value="">-- Select Verified Winner --</option>
+                    {selectedResult.participants.map((p) => (
+                      <option key={p.registration_id} value={p.registration_id}>
+                        {p.team_name} {p.team_tag ? `[${p.team_tag}]` : ""} (Side {p.side})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="number"
+                    value={editWinnerId}
+                    onChange={(e) => setEditWinnerId(e.target.value)}
+                    required
+                    placeholder="Winning Registration ID"
+                    className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3.5 py-2.5 text-xs text-white outline-none focus:border-red-500"
+                  />
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="mb-1 block text-xs font-semibold text-zinc-300">Team A Kills</label>
+                  <label className="mb-1 block text-xs font-semibold text-zinc-300">
+                    {selectedResult.participants?.find((p) => p.side === "A")?.team_name || "Team A"} Kills
+                  </label>
                   <input
                     type="number"
                     min="0"
@@ -231,7 +252,9 @@ function PendingResultsReview({ tournamentId, onRefreshData, onToast }) {
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-xs font-semibold text-zinc-300">Team B Kills</label>
+                  <label className="mb-1 block text-xs font-semibold text-zinc-300">
+                    {selectedResult.participants?.find((p) => p.side === "B")?.team_name || "Team B"} Kills
+                  </label>
                   <input
                     type="number"
                     min="0"

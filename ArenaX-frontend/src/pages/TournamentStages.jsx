@@ -4,6 +4,8 @@ import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import StageModal from "../components/StageModal";
 import GroupStageManager from "../components/GroupStageManager";
+import PlayoffBracketView from "../components/PlayoffBracketView";
+import PendingResultsReview from "../components/PendingResultsReview";
 import {
   getTournamentDetails,
   getTournamentStages,
@@ -209,12 +211,26 @@ function TournamentStages() {
                   )}
                 </div>
 
-                {stage.stage_format === "group_stage" && (
+                {stage.stage_format === "group_stage" ? (
                   <GroupStageManager
                     stageId={stage.stage_id}
+                    tournamentId={id}
                     tournamentStatus={tournament?.status}
                     onToast={showToast}
                   />
+                ) : (
+                  <div className="space-y-6">
+                    <PlayoffBracketView
+                      stageId={stage.stage_id}
+                      tournamentId={id}
+                      onToast={showToast}
+                    />
+                    <PendingResultsReview
+                      tournamentId={id}
+                      onRefreshData={loadData}
+                      onToast={showToast}
+                    />
+                  </div>
                 )}
               </div>
             ))}

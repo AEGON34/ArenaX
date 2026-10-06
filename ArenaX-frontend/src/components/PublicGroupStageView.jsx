@@ -1,19 +1,39 @@
 import React, { useEffect, useState } from "react";
-import { getStageGroups, getGroupStandings } from "../api";
+import {
+  getStageGroups,
+  getGroupStandings,
+  getMe,
+  getMyTeams,
+  getMyRegistrations,
+  getPendingMatchResults,
+} from "../api";
 import SubmitResultModal from "./SubmitResultModal";
 import PlayoffBracketView from "./PlayoffBracketView";
+import PendingResultsReview from "./PendingResultsReview";
 
-function PublicGroupStageView({ stageId, onToast }) {
+function PublicGroupStageView({ stageId, tournamentId, onToast, initialTab }) {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [stageData, setStageData] = useState(null);
-  
+
+  const effectiveTournamentId = tournamentId || stageData?.tournament_id;
+  const [currentUser, setCurrentUser] = useState(null);
+  const [myCaptainTeamIds, setMyCaptainTeamIds] = useState([]);
+  const [myCaptainRegIds, setMyCaptainRegIds] = useState([]);
+  const [pendingResultsMap, setPendingResultsMap] = useState({});
+
   // Submit Result Modal state
   const [selectedMatchForSubmit, setSelectedMatchForSubmit] = useState(null);
-  
+
   // Active sub-tab inside Group Stage: 'standings' | 'groups' | 'matches' | 'bracket'
-  const [activeTab, setActiveTab] = useState("standings");
-  
+  const [activeTab, setActiveTab] = useState(initialTab || "standings");
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
+
   // Active selected group filter for Standings/Matches view
   const [selectedGroupId, setSelectedGroupId] = useState(null);
 
@@ -29,8 +49,7 @@ function PublicGroupStageView({ stageId, onToast }) {
 
       const groups = data.groups || [];
       if (groups.length > 0) {
-        setSelectedGroupId(groups[0].group_id);
-        // Load standings for all groups
+        setSelectedGroupId((prev) => prev || groups[0].group_id);
         fetchStandingsForGroups(stageId, groups);
       }
     } catch (err) {
@@ -38,6 +57,66 @@ function PublicGroupStageView({ stageId, onToast }) {
       setErrorMsg(err.message || "Unable to load group stage data.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchUserAndPendingResults = async () => {
+    try {
+      const meData = await getMe();
+      const user = meData.user || null;
+      setCurrentUser(user);
+
+      if (user) {
+        try {
+          const [myTeams, myRegs] = await Promise.all([
+            getMyTeams().catch((err) => {
+              console.error("Failed to load teams:", err);
+              return [];
+            }),
+            getMyRegistrations().catch((err) => {
+              console.error("Failed to load registrations:", err);
+              return [];
+            }),
+          ]);
+
+          const capTeamIdsFromTeams = (myTeams || [])
+            .filter((t) => (t.role && t.role.toLowerCase() === "captain") || t.is_captain)
+            .map((t) => Number(t.team_id));
+
+          const capTeamIdsFromRegs = (myRegs || [])
+            .filter((r) => r.team_id)
+            .map((r) => Number(r.team_id));
+
+          const allCapTeamIds = Array.from(
+            new Set([...capTeamIdsFromTeams, ...capTeamIdsFromRegs])
+          );
+          const regIds = (myRegs || [])
+            .filter((r) => r.registration_id)
+            .map((r) => Number(r.registration_id));
+
+          setMyCaptainTeamIds(allCapTeamIds);
+          setMyCaptainRegIds(regIds);
+        } catch (teamErr) {
+          console.error("Failed to load user teams/registrations:", teamErr);
+        }
+      }
+    } catch {
+      setCurrentUser(null);
+    }
+  };
+
+  const fetchPendingResultsMap = async () => {
+    if (effectiveTournamentId && currentUser?.role === "organizer") {
+      try {
+        const pendingRes = await getPendingMatchResults(effectiveTournamentId);
+        const map = {};
+        (pendingRes.pendingResults || []).forEach((p) => {
+          map[p.match_id] = p;
+        });
+        setPendingResultsMap(map);
+      } catch {
+        setPendingResultsMap({});
+      }
     }
   };
 
@@ -64,11 +143,39 @@ function PublicGroupStageView({ stageId, onToast }) {
   };
 
   useEffect(() => {
+    fetchUserAndPendingResults();
+  }, []);
+
+  useEffect(() => {
     if (stageId) {
       fetchStageData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stageId]);
+
+  useEffect(() => {
+    if (effectiveTournamentId && currentUser?.role === "organizer") {
+      fetchPendingResultsMap();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveTournamentId, currentUser]);
+
+  // Auto-select group if the captain belongs to one
+  useEffect(() => {
+    if (!stageData?.groups || stageData.groups.length === 0) return;
+    if (myCaptainTeamIds.length === 0 && myCaptainRegIds.length === 0) return;
+
+    const userGroup = stageData.groups.find((g) =>
+      (g.members || []).some(
+        (m) =>
+          myCaptainTeamIds.includes(Number(m.team_id)) ||
+          myCaptainRegIds.includes(Number(m.registration_id))
+      )
+    );
+    if (userGroup) {
+      setSelectedGroupId(userGroup.group_id);
+    }
+  }, [stageData, myCaptainTeamIds, myCaptainRegIds]);
 
   if (loading) {
     return (
@@ -94,8 +201,6 @@ function PublicGroupStageView({ stageId, onToast }) {
   }
 
   const groups = stageData?.groups || [];
-  const members = stageData?.members || [];
-  const matches = stageData?.matches || stageData?.matchesMap || [];
   const groupStatus = stageData?.groupGenerationStatus || "not_generated";
 
   if (groups.length === 0 || groupStatus === "not_generated") {
@@ -109,10 +214,13 @@ function PublicGroupStageView({ stageId, onToast }) {
     );
   }
 
-  // Filter members by group
-  const activeGroupMembers = members.filter(
-    (m) => String(m.group_id) === String(selectedGroupId)
-  );
+  // Active group object
+  const activeGroup =
+    groups.find((g) => String(g.group_id) === String(selectedGroupId)) ||
+    groups[0];
+
+  const activeGroupMembers = activeGroup?.members || [];
+  const activeGroupMatches = activeGroup?.matches || [];
 
   // Filter standings by selected group
   const activeStandingsData = standingsMap[selectedGroupId] || {
@@ -120,11 +228,6 @@ function PublicGroupStageView({ stageId, onToast }) {
     error: null,
     standings: [],
   };
-
-  // Filter matches by selected group
-  const activeGroupMatches = Array.isArray(matches)
-    ? matches.filter((m) => String(m.group_id) === String(selectedGroupId))
-    : Object.values(matches).filter((m) => String(m.group_id) === String(selectedGroupId));
 
   // Group matches by round
   const matchesByRound = {};
@@ -134,8 +237,60 @@ function PublicGroupStageView({ stageId, onToast }) {
     matchesByRound[round].push(m);
   });
 
+  // Collect all matches where user is captain across all groups
+  const allCaptainMatches = (stageData?.groups || []).flatMap((g) =>
+    (g.matches || []).filter((m) =>
+      (m.participants || []).some(
+        (p) =>
+          (p.team_id && myCaptainTeamIds.includes(Number(p.team_id))) ||
+          (p.registration_id && myCaptainRegIds.includes(Number(p.registration_id)))
+      )
+    )
+  );
+
+  const pendingSubmitMatches = allCaptainMatches.filter((m) => {
+    const isCompleted = m.status === "completed" || m.result_status === "VERIFIED";
+    const isPending =
+      m.result_status === "SUBMITTED" ||
+      m.status === "pending_verification" ||
+      Boolean(pendingResultsMap[m.match_id]);
+    return !isCompleted && !isPending;
+  });
+
+  const isOrganizer = currentUser?.role === "organizer";
+
   return (
     <div className="mt-8 pt-8 border-t border-zinc-800/80">
+      {/* Captain Action Banner if match results are ready to submit */}
+      {pendingSubmitMatches.length > 0 && (
+        <div className="mb-6 rounded-2xl border border-red-500/40 bg-gradient-to-r from-red-500/15 via-red-500/10 to-transparent p-4 sm:p-5 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="flex h-2.5 w-2.5 rounded-full bg-red-500 animate-ping" />
+              <h4 className="text-sm font-bold text-white">Action Required: Submit Match Result</h4>
+              <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-bold text-red-400 border border-red-500/30">
+                {pendingSubmitMatches.length} Ready
+              </span>
+            </div>
+            <p className="text-xs text-zinc-300">
+              You are captain in Match #{pendingSubmitMatches[0].match_id} (
+              {pendingSubmitMatches[0].participants?.[0]?.team_name || "Team A"} vs{" "}
+              {pendingSubmitMatches[0].participants?.[1]?.team_name || "Team B"}
+              ). Submit match score and victory screenshot to proceed.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedMatchForSubmit(pendingSubmitMatches[0]);
+            }}
+            className="shrink-0 rounded-xl bg-red-500 px-5 py-2.5 text-xs font-bold text-white shadow-lg shadow-red-500/20 hover:bg-red-600 transition"
+          >
+            Submit Result Now →
+          </button>
+        </div>
+      )}
+
       {/* View Header & Sub-Tabs */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
@@ -202,20 +357,32 @@ function PublicGroupStageView({ stageId, onToast }) {
       {/* Group Selector Pills */}
       <div className="flex items-center gap-2 overflow-x-auto pb-3 mb-6 scrollbar-none">
         <span className="text-xs font-bold text-zinc-500 uppercase shrink-0 mr-1">Group:</span>
-        {groups.map((g) => (
-          <button
-            key={g.group_id}
-            type="button"
-            onClick={() => setSelectedGroupId(g.group_id)}
-            className={`rounded-xl px-4 py-2 text-xs font-bold transition shrink-0 border ${
-              String(selectedGroupId) === String(g.group_id)
-                ? "bg-zinc-800 text-white border-zinc-600 shadow-md"
-                : "bg-zinc-950/80 text-zinc-400 border-zinc-800/80 hover:border-zinc-700 hover:text-white"
-            }`}
-          >
-            {g.group_name}
-          </button>
-        ))}
+        {groups.map((g) => {
+          const isUserInGroup = (g.members || []).some(
+            (mem) =>
+              myCaptainTeamIds.includes(Number(mem.team_id)) ||
+              myCaptainRegIds.includes(Number(mem.registration_id))
+          );
+          return (
+            <button
+              key={g.group_id}
+              type="button"
+              onClick={() => setSelectedGroupId(g.group_id)}
+              className={`rounded-xl px-4 py-2 text-xs font-bold transition shrink-0 border flex items-center gap-1.5 ${
+                String(selectedGroupId) === String(g.group_id)
+                  ? "bg-zinc-800 text-white border-zinc-600 shadow-md"
+                  : "bg-zinc-950/80 text-zinc-400 border-zinc-800/80 hover:border-zinc-700 hover:text-white"
+              }`}
+            >
+              <span>{g.group_name}</span>
+              {isUserInGroup && (
+                <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[9px] font-extrabold text-red-400 border border-red-500/30 uppercase">
+                  Your Group
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* TAB 1: STANDINGS */}
@@ -316,7 +483,7 @@ function PublicGroupStageView({ stageId, onToast }) {
       {activeTab === "groups" && (
         <div className="grid gap-6 grid-cols-1 sm:grid-cols-2">
           {groups.map((group) => {
-            const gMembers = members.filter((m) => String(m.group_id) === String(group.group_id));
+            const gMembers = group.members || [];
             return (
               <div
                 key={group.group_id}
@@ -367,6 +534,18 @@ function PublicGroupStageView({ stageId, onToast }) {
       {/* TAB 3: MATCHES */}
       {activeTab === "matches" && (
         <div className="space-y-6">
+          {/* Organizer Pending Results Review Section */}
+          {isOrganizer && effectiveTournamentId && (
+            <PendingResultsReview
+              tournamentId={effectiveTournamentId}
+              onRefreshData={() => {
+                fetchStageData();
+                fetchPendingResultsMap();
+              }}
+              onToast={onToast}
+            />
+          )}
+
           {Object.keys(matchesByRound).length === 0 ? (
             <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-900/20 p-12 text-center text-xs text-zinc-400">
               No group matches generated yet for this group.
@@ -382,7 +561,19 @@ function PublicGroupStageView({ stageId, onToast }) {
                   {matchesByRound[roundNum].map((m) => {
                     const teamA = m.participants?.[0];
                     const teamB = m.participants?.[1];
-                    const isCompleted = m.status === "completed";
+                    const isCompleted = m.status === "completed" || m.result_status === "VERIFIED";
+
+                    const isCaptainOfMatch = (m.participants || []).some(
+                      (p) =>
+                        (p.team_id && myCaptainTeamIds.includes(Number(p.team_id))) ||
+                        (p.registration_id && myCaptainRegIds.includes(Number(p.registration_id)))
+                    );
+
+                    const pendingResult = pendingResultsMap[m.match_id];
+                    const isPendingVerification =
+                      m.result_status === "SUBMITTED" ||
+                      m.status === "pending_verification" ||
+                      Boolean(pendingResult);
 
                     return (
                       <div
@@ -395,10 +586,16 @@ function PublicGroupStageView({ stageId, onToast }) {
                             className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase border ${
                               isCompleted
                                 ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                : isPendingVerification
+                                ? "bg-amber-500/10 text-amber-400 border-amber-500/30 animate-pulse"
                                 : "bg-zinc-800 text-zinc-400 border-zinc-700"
                             }`}
                           >
-                            {m.status}
+                            {isCompleted
+                              ? "COMPLETED"
+                              : isPendingVerification
+                              ? "AWAITING VERIFICATION"
+                              : m.status}
                           </span>
                         </div>
 
@@ -423,17 +620,41 @@ function PublicGroupStageView({ stageId, onToast }) {
                           </div>
                         </div>
 
-                        {!isCompleted && (
-                          <div className="mt-4 pt-3 border-t border-zinc-800/80 flex justify-end">
+                        {/* Action Footer */}
+                        <div className="mt-4 pt-3 border-t border-zinc-800/80 flex justify-between items-center text-xs">
+                          {isCompleted ? (
+                            <span className="text-xs font-semibold text-emerald-400">✓ Result Verified</span>
+                          ) : isPendingVerification ? (
+                            isOrganizer ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  // Scroll to PendingResultsReview console
+                                  window.scrollTo({ top: 400, behavior: "smooth" });
+                                }}
+                                className="w-full rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-500 shadow-md shadow-emerald-600/20 transition"
+                              >
+                                Review & Verify Result ↗
+                              </button>
+                            ) : isCaptainOfMatch ? (
+                              <span className="text-xs font-semibold text-amber-400">⏳ Result Submitted (Awaiting Review)</span>
+                            ) : (
+                              <span className="text-xs font-medium text-zinc-500">Under Organizer Review</span>
+                            )
+                          ) : isCaptainOfMatch ? (
                             <button
                               type="button"
                               onClick={() => setSelectedMatchForSubmit(m)}
-                              className="rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-1.5 text-xs font-bold text-red-400 hover:bg-red-500/20 transition"
+                              className="w-full rounded-lg bg-red-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-600 shadow-md shadow-red-500/20 transition"
                             >
                               Submit Result
                             </button>
-                          </div>
-                        )}
+                          ) : isOrganizer ? (
+                            <span className="text-xs text-zinc-500 italic">Awaiting Captain Submission</span>
+                          ) : (
+                            <span className="text-xs text-zinc-500 font-medium">Scheduled</span>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
@@ -446,7 +667,23 @@ function PublicGroupStageView({ stageId, onToast }) {
 
       {/* TAB 4: PLAYOFF BRACKET */}
       {activeTab === "bracket" && (
-        <PlayoffBracketView stageId={stageId} />
+        <div className="space-y-6">
+          <PlayoffBracketView
+            stageId={stageId}
+            tournamentId={effectiveTournamentId}
+            onToast={onToast}
+          />
+          {isOrganizer && effectiveTournamentId && (
+            <PendingResultsReview
+              tournamentId={effectiveTournamentId}
+              onRefreshData={() => {
+                fetchStageData();
+                fetchPendingResultsMap();
+              }}
+              onToast={onToast}
+            />
+          )}
+        </div>
       )}
 
       {/* Submit Result Modal */}
@@ -456,6 +693,7 @@ function PublicGroupStageView({ stageId, onToast }) {
         onClose={() => setSelectedMatchForSubmit(null)}
         onSuccess={(msg) => {
           fetchStageData();
+          fetchPendingResultsMap();
           onToast && onToast(msg);
         }}
       />

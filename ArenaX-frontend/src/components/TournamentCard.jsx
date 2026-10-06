@@ -88,6 +88,41 @@ function TournamentCard({ tournament }) {
                 {formatPrizePool(tournament.prize_pool_usd)}
               </span>
             </div>
+
+            {tournament.registration_status && (
+              <div className="flex justify-between items-center pt-1 border-t border-zinc-800/50">
+                <span>Registration</span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase border ${
+                    tournament.registration_status === "OPEN"
+                      ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                      : tournament.registration_status === "NOT_STARTED"
+                      ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                      : tournament.registration_status === "FROZEN"
+                      ? "bg-purple-500/10 text-purple-400 border-purple-500/20"
+                      : "bg-zinc-800 text-zinc-400 border-zinc-700"
+                  }`}
+                >
+                  {tournament.registration_status === "NOT_STARTED"
+                    ? "NOT STARTED"
+                    : tournament.registration_status}
+                </span>
+              </div>
+            )}
+
+            {tournament.registration_end_at && (
+              <div className="flex justify-between items-center text-[11px] text-zinc-500">
+                <span>Deadline</span>
+                <span className="text-zinc-400">
+                  {new Date(tournament.registration_end_at).toLocaleDateString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 

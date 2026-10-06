@@ -1,10 +1,19 @@
 import React, { useEffect, useState } from "react";
-import { getBracket } from "../api";
+import { getBracket, getMe, getMyTeams, getMyRegistrations } from "../api";
+import SubmitResultModal from "./SubmitResultModal";
+import PendingResultsReview from "./PendingResultsReview";
 
-function PlayoffBracketView({ stageId }) {
+function PlayoffBracketView({ stageId, tournamentId, onToast }) {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [bracketData, setBracketData] = useState(null);
+  const [fetchedTournamentId, setFetchedTournamentId] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [myCaptainTeamIds, setMyCaptainTeamIds] = useState([]);
+  const [myCaptainRegIds, setMyCaptainRegIds] = useState([]);
+  const [selectedMatchForSubmit, setSelectedMatchForSubmit] = useState(null);
+
+  const effectiveTournamentId = tournamentId || fetchedTournamentId;
 
   // Active section filter: 'all' | 'play_in' | 'upper' | 'lower' | 'grand_final'
   const [activeSection, setActiveSection] = useState("upper");
@@ -15,6 +24,9 @@ function PlayoffBracketView({ stageId }) {
     try {
       const data = await getBracket(stageId);
       setBracketData(data.bracket || null);
+      if (data.tournament_id || data.tournamentId) {
+        setFetchedTournamentId(data.tournament_id || data.tournamentId);
+      }
     } catch (err) {
       console.error("Failed to fetch playoff bracket:", err);
       setErrorMsg(err.message || err.data?.error || "Failed to load playoff bracket.");
@@ -22,6 +34,49 @@ function PlayoffBracketView({ stageId }) {
       setLoading(false);
     }
   };
+
+  const fetchUserData = async () => {
+    try {
+      const meData = await getMe();
+      const user = meData.user || null;
+      setCurrentUser(user);
+
+      if (user) {
+        try {
+          const [myTeams, myRegs] = await Promise.all([
+            getMyTeams().catch(() => []),
+            getMyRegistrations().catch(() => []),
+          ]);
+
+          const capTeamIdsFromTeams = (myTeams || [])
+            .filter((t) => (t.role && t.role.toLowerCase() === "captain") || t.is_captain)
+            .map((t) => Number(t.team_id));
+
+          const capTeamIdsFromRegs = (myRegs || [])
+            .filter((r) => r.team_id)
+            .map((r) => Number(r.team_id));
+
+          const allCapTeamIds = Array.from(
+            new Set([...capTeamIdsFromTeams, ...capTeamIdsFromRegs])
+          );
+          const regIds = (myRegs || [])
+            .filter((r) => r.registration_id)
+            .map((r) => Number(r.registration_id));
+
+          setMyCaptainTeamIds(allCapTeamIds);
+          setMyCaptainRegIds(regIds);
+        } catch (teamErr) {
+          console.error("Failed to load user teams/registrations:", teamErr);
+        }
+      }
+    } catch {
+      setCurrentUser(null);
+    }
+  };
+
+  useEffect(() => {
+    fetchUserData();
+  }, []);
 
   useEffect(() => {
     if (stageId) {
@@ -167,9 +222,34 @@ function PlayoffBracketView({ stageId }) {
           </div>
         </div>
 
+        {/* Action Footer */}
+        <div className="mt-3 pt-2.5 border-t border-zinc-800/80 flex items-center justify-between text-xs">
+          {isCompleted ? (
+            <span className="text-emerald-400 font-bold text-[11px]">✓ Result Verified</span>
+          ) : isPendingVerification ? (
+            currentUser?.role === "organizer" ? (
+              <span className="text-amber-400 font-bold text-[11px]">⚡ Pending Organizer Review</span>
+            ) : (
+              <span className="text-amber-400 font-semibold text-[11px]">⏳ Result Submitted (Awaiting Review)</span>
+            )
+          ) : isCaptainOfMatch && hasBothParticipants ? (
+            <button
+              type="button"
+              onClick={() => setSelectedMatchForSubmit(m)}
+              className="w-full rounded-lg bg-red-500 px-3 py-1 text-xs font-bold text-white hover:bg-red-600 shadow-md shadow-red-500/20 transition"
+            >
+              Submit Result
+            </button>
+          ) : hasBothParticipants ? (
+            <span className="text-zinc-500 text-[11px] font-medium">Scheduled</span>
+          ) : (
+            <span className="text-zinc-600 text-[11px] italic">Awaiting Advancing Teams</span>
+          )}
+        </div>
+
         {/* Advancement Links Preview */}
         {m.advancements && m.advancements.length > 0 && (
-          <div className="mt-3 pt-2.5 border-t border-zinc-800/60 text-[10px] text-zinc-500 flex flex-wrap gap-2">
+          <div className="mt-2.5 pt-2 border-t border-zinc-800/40 text-[10px] text-zinc-500 flex flex-wrap gap-2">
             {m.advancements.map((adv) => (
               <span key={adv.advancement_id} className="truncate">
                 {adv.outcome_type === "WINNER" ? "➔ Winner" : "➔ Loser"} to Match #{adv.destination_match_id} ({adv.destination_side})
@@ -181,9 +261,30 @@ function PlayoffBracketView({ stageId }) {
     );
   };
 
+  const getRoundTitle = (sectionKey, roundNumber, maxRounds) => {
+    const r = Number(roundNumber);
+    const max = Number(maxRounds);
+    if (sectionKey === "Upper Bracket") {
+      if (r === max) return "Upper Final";
+      if (r === max - 1) return "Semifinals";
+      if (r === max - 2) return "Quarterfinals";
+      return `Round ${r}`;
+    }
+    if (sectionKey === "Lower Bracket") {
+      if (r === max) return "Lower Final";
+      if (r === max - 1) return "Lower Semifinal";
+      return `Lower Round ${r}`;
+    }
+    if (sectionKey === "Play-In Round") {
+      return `Play-In Round ${r}`;
+    }
+    return `Round ${r}`;
+  };
+
   const renderBracketSection = (matchesList, sectionTitle) => {
     const rounds = groupMatchesByRound(matchesList);
     const roundNumbers = Object.keys(rounds).sort((a, b) => Number(a) - Number(b));
+    const maxRound = roundNumbers.length > 0 ? Math.max(...roundNumbers.map(Number)) : 1;
 
     if (roundNumbers.length === 0) {
       return (
@@ -202,7 +303,7 @@ function PlayoffBracketView({ stageId }) {
           {roundNumbers.map((rNum) => (
             <div key={rNum} className="space-y-3 shrink-0">
               <div className="rounded-lg bg-zinc-900 px-3 py-1.5 text-center text-xs font-black text-white border border-zinc-800">
-                Round {rNum}
+                {getRoundTitle(sectionTitle, rNum, maxRound)}
               </div>
               <div className="space-y-4">
                 {rounds[rNum].map((matchItem) => renderMatchCard(matchItem))}
@@ -297,6 +398,26 @@ function PlayoffBracketView({ stageId }) {
           )}
         </div>
       )}
+
+      {/* Organizer Pending Results Review Section */}
+      {currentUser?.role === "organizer" && effectiveTournamentId && (
+        <PendingResultsReview
+          tournamentId={effectiveTournamentId}
+          onRefreshData={fetchBracket}
+          onToast={onToast}
+        />
+      )}
+
+      {/* Submit Result Modal */}
+      <SubmitResultModal
+        isOpen={Boolean(selectedMatchForSubmit)}
+        match={selectedMatchForSubmit}
+        onClose={() => setSelectedMatchForSubmit(null)}
+        onSuccess={(msg) => {
+          fetchBracket();
+          onToast && onToast(msg);
+        }}
+      />
     </div>
   );
 }

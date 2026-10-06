@@ -368,6 +368,12 @@ export async function moveGroupMember(stageId, data) {
   });
 }
 
+export async function removeGroupMember(stageId, registrationId) {
+  return request(`/stages/${stageId}/groups/members/${registrationId}`, {
+    method: "DELETE",
+  });
+}
+
 export async function getStageGroups(stageId) {
   return request(`/stages/${stageId}/groups`);
 }

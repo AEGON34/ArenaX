@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { submitMatchResult } from "../api";
 
 function SubmitResultModal({ isOpen, onClose, onSuccess, match }) {
@@ -8,6 +8,16 @@ function SubmitResultModal({ isOpen, onClose, onSuccess, match }) {
   const [evidenceUrl, setEvidenceUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+
+  useEffect(() => {
+    if (isOpen) {
+      setWinnerRegId("");
+      setTeamAKills("0");
+      setTeamBKills("0");
+      setEvidenceUrl("");
+      setErrorMsg("");
+    }
+  }, [isOpen, match?.match_id]);
 
   if (!isOpen || !match) return null;
 

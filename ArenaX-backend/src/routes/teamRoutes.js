@@ -16,10 +16,13 @@ router.get("/my", requireAuth, (req, res) => {
         t.team_name,
         t.team_tag,
         t.status,
+        t.captain_id,
+        ga.account_id,
         g.game_name,
         tm.role,
         tm.is_substitute,
-        tm.is_active
+        tm.is_active,
+        CASE WHEN tm.role = 'captain' OR t.captain_id = ga.account_id THEN 1 ELSE 0 END AS is_captain
     FROM TEAM_MEMBER tm
     JOIN TEAM t
         ON tm.team_id = t.team_id

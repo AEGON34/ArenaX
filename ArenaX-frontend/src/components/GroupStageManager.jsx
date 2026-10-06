@@ -1,9 +1,11 @@
+import { useState, useEffect } from "react";
 import {
   getStageGroups,
   generateGroups,
   resetGroups,
   swapGroupMembers,
   moveGroupMember,
+  removeGroupMember,
   generateGroupMatches,
   generateQualification,
   assignFinalRank,
@@ -21,11 +23,13 @@ const STATUS_BADGES = {
   bracket_generated: { label: "Playoffs Generated", style: "bg-amber-500/10 text-amber-400 border-amber-500/20" },
 };
 
-function GroupStageManager({ stageId, tournamentStatus, onToast }) {
+function GroupStageManager({ stageId, tournamentId, tournamentStatus, onToast }) {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [stageData, setStageData] = useState(null);
+
+  const effectiveTournamentId = tournamentId || stageData?.tournament_id;
 
   // Allocation mode state
   const [assignmentMode, setAssignmentMode] = useState("sequential");
@@ -142,6 +146,9 @@ function GroupStageManager({ stageId, tournamentStatus, onToast }) {
       } else if (confirmModal.type === "generate_bracket") {
         await generateBracket(stageId);
         onToast && onToast("Playoff Double Elimination bracket generated successfully!");
+      } else if (confirmModal.type === "remove_member") {
+        await removeGroupMember(stageId, confirmModal.registrationId);
+        onToast && onToast(`Team "${confirmModal.teamName}" removed from group and registration rejected!`);
       } else if (confirmModal.type === "swap_members") {
         await swapGroupMembers(stageId, { registrationIdA: Number(regIdA), registrationIdB: Number(regIdB) });
         onToast && onToast("Teams swapped successfully!");
@@ -211,21 +218,26 @@ function GroupStageManager({ stageId, tournamentStatus, onToast }) {
     setSwapModalOpen(true);
   };
 
-  const handleConfirmSwap = () => {
+  const handleConfirmSwap = async () => {
     if (!regIdA || !regIdB || regIdA === regIdB) {
       setErrorMsg("Please select two different teams to swap.");
       return;
     }
-    const teamA = members.find((m) => String(m.registration_id) === String(regIdA));
-    const teamB = members.find((m) => String(m.registration_id) === String(regIdB));
-
-    setConfirmModal({
-      isOpen: true,
-      type: "swap_members",
-      title: "Swap Teams?",
-      message: `Swap "${teamA?.team_name || 'Team 1'}" with "${teamB?.team_name || 'Team 2'}"?`,
-      confirmVariant: "primary",
-    });
+    setActionLoading(true);
+    setErrorMsg("");
+    try {
+      await swapGroupMembers(stageId, { registrationIdA: Number(regIdA), registrationIdB: Number(regIdB) });
+      onToast && onToast("Teams swapped successfully!");
+      setSwapModalOpen(false);
+      setRegIdA("");
+      setRegIdB("");
+      await fetchGroupData();
+    } catch (err) {
+      console.error("Swap error:", err);
+      setErrorMsg(err.message || err.data?.error || "Failed to swap teams.");
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const handleOpenMoveModal = (preselectedRegId = "") => {
@@ -235,32 +247,51 @@ function GroupStageManager({ stageId, tournamentStatus, onToast }) {
     setMoveModalOpen(true);
   };
 
-  const handleConfirmMove = () => {
+  const handleConfirmMove = async () => {
     if (!moveRegId || !toGroupId) {
       setErrorMsg("Please select a team and a target destination group.");
       return;
     }
-    const team = members.find((m) => String(m.registration_id) === String(moveRegId));
-    const targetGroup = groups.find((g) => String(g.group_id) === String(toGroupId));
+    setActionLoading(true);
+    setErrorMsg("");
+    try {
+      await moveGroupMember(stageId, { registrationId: Number(moveRegId), toGroupId: Number(toGroupId) });
+      onToast && onToast("Team moved successfully!");
+      setMoveModalOpen(false);
+      setMoveRegId("");
+      setToGroupId("");
+      await fetchGroupData();
+    } catch (err) {
+      console.error("Move error:", err);
+      setErrorMsg(err.message || err.data?.error || "Failed to move team.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
+  const handleOpenRemoveModal = (member) => {
+    setErrorMsg("");
     setConfirmModal({
       isOpen: true,
-      type: "move_member",
-      title: "Move Team?",
-      message: `Move "${team?.team_name || 'Team'}" to ${targetGroup?.group_name || 'Target Group'}?`,
-      confirmVariant: "primary",
+      type: "remove_member",
+      registrationId: member.registration_id,
+      teamName: member.team_name,
+      title: "Remove Team from Group?",
+      message: `Remove "${member.team_name}" from group and reject their registration? The slot will become empty.`,
+      confirmVariant: "danger",
     });
   };
 
-  // Group members helper
+  // Group members and matches helper
   const groups = stageData?.groups || [];
-  const members = stageData?.members || [];
-  const matchesMap = stageData?.matches || stageData?.matchesMap || {};
-
-  // Group member grouping by group_id
   const membersByGroup = {};
+  const members = [];
+  const allMatches = [];
   groups.forEach((g) => {
-    membersByGroup[g.group_id] = members.filter((m) => String(m.group_id) === String(g.group_id));
+    const gMems = g.members || [];
+    membersByGroup[g.group_id] = gMems;
+    gMems.forEach((m) => members.push({ ...m, group_id: g.group_id }));
+    if (g.matches) allMatches.push(...g.matches);
   });
 
   return (
@@ -398,7 +429,7 @@ function GroupStageManager({ stageId, tournamentStatus, onToast }) {
                   )}
                 </div>
 
-                {groupStatus === "groups_assigned" && !isLocked && (
+                {groupStatus === "groups_assigned" && tournamentStatus !== "completed" && (
                   <button
                     type="button"
                     onClick={handleGenerateMatchesClick}
@@ -409,7 +440,7 @@ function GroupStageManager({ stageId, tournamentStatus, onToast }) {
                   </button>
                 )}
 
-                {groupStatus === "matches_generated" && !isLocked && (
+                {groupStatus === "matches_generated" && tournamentStatus !== "completed" && (
                   <button
                     type="button"
                     onClick={handleGenerateQualificationClick}
@@ -426,7 +457,7 @@ function GroupStageManager({ stageId, tournamentStatus, onToast }) {
                   </span>
                 )}
 
-                {groupStatus === "qualified" && !isLocked && (
+                {groupStatus === "qualified" && tournamentStatus !== "completed" && (
                   <button
                     type="button"
                     onClick={handleGenerateBracketClick}
@@ -512,13 +543,23 @@ function GroupStageManager({ stageId, tournamentStatus, onToast }) {
                                         </button>
 
                                         {canModifyGroups && (
-                                          <button
-                                            type="button"
-                                            onClick={() => handleOpenMoveModal(String(member.registration_id))}
-                                            className="text-[11px] font-semibold text-zinc-400 hover:text-white transition"
-                                          >
-                                            Move
-                                          </button>
+                                          <>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleOpenMoveModal(String(member.registration_id))}
+                                              className="text-[11px] font-semibold text-zinc-400 hover:text-white transition"
+                                            >
+                                              Move
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleOpenRemoveModal(member)}
+                                              className="text-[11px] font-semibold text-red-400 hover:text-red-300 transition"
+                                              title="Remove team from group and reject registration"
+                                            >
+                                              Remove
+                                            </button>
+                                          </>
                                         )}
                                       </div>
                                     )}
@@ -535,15 +576,15 @@ function GroupStageManager({ stageId, tournamentStatus, onToast }) {
               </div>
 
               {/* Optional Preview of Group Matches if generated */}
-              {["matches_generated", "qualified", "bracket_generated"].includes(groupStatus) && matchesMap && (
+              {["matches_generated", "qualified", "bracket_generated"].includes(groupStatus) && (
                 <div className="mt-8 pt-6 border-t border-zinc-800/80">
                   <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-4">
                     Group Stage Matches Preview
                   </h4>
 
-                  {Array.isArray(matchesMap) && matchesMap.length > 0 ? (
+                  {allMatches.length > 0 ? (
                     <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
-                      {matchesMap.slice(0, 12).map((m) => (
+                      {allMatches.slice(0, 12).map((m) => (
                         <div
                           key={m.match_id}
                           className="rounded-lg border border-zinc-800/80 bg-zinc-950/60 p-3 flex items-center justify-between text-xs"
@@ -569,9 +610,9 @@ function GroupStageManager({ stageId, tournamentStatus, onToast }) {
               )}
 
               {/* Pending Match Results Review for Organizer */}
-              {stageData?.tournament_id && (
+              {effectiveTournamentId && (
                 <PendingResultsReview
-                  tournamentId={stageData.tournament_id}
+                  tournamentId={effectiveTournamentId}
                   onRefreshData={fetchGroupData}
                   onToast={onToast}
                 />
@@ -579,7 +620,11 @@ function GroupStageManager({ stageId, tournamentStatus, onToast }) {
 
               {/* Playoff Double Elimination Bracket View */}
               {groupStatus === "bracket_generated" && (
-                <PlayoffBracketView stageId={stageId} />
+                <PlayoffBracketView
+                  stageId={stageId}
+                  tournamentId={effectiveTournamentId}
+                  onToast={onToast}
+                />
               )}
             </div>
           )}

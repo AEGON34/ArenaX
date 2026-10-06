@@ -6,11 +6,30 @@ function CreateTournamentModal({ isOpen, onClose, onSuccess, games = [], editing
   const [name, setName] = useState("");
   const [format, setFormat] = useState("single_elimination");
   const [prizePoolUsd, setPrizePoolUsd] = useState("");
+  const [regStartAt, setRegStartAt] = useState("");
+  const [regEndAt, setRegEndAt] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
   const isEditMode = Boolean(editingTournament);
+
+  const formatToInputDate = (dateVal) => {
+    if (!dateVal) return "";
+    try {
+      const d = new Date(dateVal);
+      if (isNaN(d.getTime())) return "";
+      const pad = (n) => String(n).padStart(2, "0");
+      const yyyy = d.getFullYear();
+      const mm = pad(d.getMonth() + 1);
+      const dd = pad(d.getDate());
+      const hh = pad(d.getHours());
+      const min = pad(d.getMinutes());
+      return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+    } catch {
+      return "";
+    }
+  };
 
   useEffect(() => {
     if (isEditMode) {
@@ -22,6 +41,8 @@ function CreateTournamentModal({ isOpen, onClose, onSuccess, games = [], editing
           ? String(editingTournament.prize_pool_usd)
           : ""
       );
+      setRegStartAt(formatToInputDate(editingTournament.registration_start_at));
+      setRegEndAt(formatToInputDate(editingTournament.registration_end_at));
     } else {
       if (games.length > 0) {
         setGameId(String(games[0].game_id));
@@ -29,6 +50,8 @@ function CreateTournamentModal({ isOpen, onClose, onSuccess, games = [], editing
       setName("");
       setFormat("single_elimination");
       setPrizePoolUsd("");
+      setRegStartAt("");
+      setRegEndAt("");
     }
     setErrorMessage("");
   }, [isOpen, games, editingTournament]);
@@ -46,6 +69,13 @@ function CreateTournamentModal({ isOpen, onClose, onSuccess, games = [], editing
     if (!name.trim()) {
       setErrorMessage("Tournament name is required.");
       return;
+    }
+
+    if (regStartAt && regEndAt) {
+      if (new Date(regEndAt) <= new Date(regStartAt)) {
+        setErrorMessage("Registration deadline must be after registration start time.");
+        return;
+      }
     }
 
     let parsedPrize = null;
@@ -78,6 +108,8 @@ function CreateTournamentModal({ isOpen, onClose, onSuccess, games = [], editing
         name: name.trim(),
         format,
         prize_pool_usd: parsedPrize,
+        registration_start_at: regStartAt ? new Date(regStartAt).toISOString() : null,
+        registration_end_at: regEndAt ? new Date(regEndAt).toISOString() : null,
       };
 
       if (isEditMode) {
@@ -94,7 +126,7 @@ function CreateTournamentModal({ isOpen, onClose, onSuccess, games = [], editing
         window.location.href = "/login";
         return;
       }
-      setErrorMessage(err.message || "Failed to save tournament. Please try again.");
+      setErrorMessage(err.message || err.data?.error || "Failed to save tournament. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -204,6 +236,35 @@ function CreateTournamentModal({ isOpen, onClose, onSuccess, games = [], editing
               onChange={(e) => setPrizePoolUsd(e.target.value)}
               className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-red-500"
             />
+          </div>
+
+          {/* Registration Timeline */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-zinc-300">
+                Registration Opens <span className="text-zinc-500 font-normal">(Optional)</span>
+              </label>
+              <input
+                type="datetime-local"
+                value={regStartAt}
+                onChange={(e) => setRegStartAt(e.target.value)}
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-xs text-white outline-none focus:border-red-500"
+              />
+              <p className="mt-1 text-[11px] text-zinc-500">Date & time registration becomes open.</p>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-zinc-300">
+                Registration Deadline <span className="text-zinc-500 font-normal">(Optional)</span>
+              </label>
+              <input
+                type="datetime-local"
+                value={regEndAt}
+                onChange={(e) => setRegEndAt(e.target.value)}
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-xs text-white outline-none focus:border-red-500"
+              />
+              <p className="mt-1 text-[11px] text-zinc-500">Must be after registration opening time.</p>
+            </div>
           </div>
 
           {/* Actions */}

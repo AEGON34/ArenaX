@@ -200,6 +200,80 @@ router.get("/:id", requireAuth, (req, res) => {
 });
 
 /**
+ * GET /api/tournaments/:tournamentId/results/pending
+ * Organizer-only endpoint to get all pending submitted match results for a tournament.
+ */
+router.get("/:tournamentId/results/pending", requireAuth, requireRole("organizer"), async (req, res) => {
+    const tournamentId = req.params.tournamentId;
+    const organizerId = req.session.userId;
+
+    try {
+        const [tournaments] = await db.promise().query(
+            `SELECT tournament_id, organizer_id FROM TOURNAMENT WHERE tournament_id = ?`,
+            [tournamentId]
+        );
+
+        if (tournaments.length === 0) {
+            return res.status(404).json({
+                error: "TOURNAMENT NOT FOUND",
+                code: "NOT_FOUND"
+            });
+        }
+
+        if (tournaments[0].organizer_id !== organizerId) {
+            return res.status(403).json({
+                error: "YOU DO NOT OWN THIS TOURNAMENT",
+                code: "FORBIDDEN"
+            });
+        }
+
+        const [pendingResults] = await db.promise().query(
+            `SELECT mr.result_id, mr.match_id, mr.winning_registration_id,
+                    mr.team_a_kills, mr.team_b_kills, mr.evidence_url, mr.status, mr.submitted_at,
+                    m.stage_id, m.group_id,
+                    ts.stage_name, COALESCE(sg.group_name, 'Playoffs') AS group_name,
+                    u.username AS submitted_by_username
+             FROM MATCH_RESULT mr
+             JOIN \`MATCH\` m ON mr.match_id = m.match_id
+             JOIN TOURNAMENT_STAGE ts ON m.stage_id = ts.stage_id
+             LEFT JOIN STAGE_GROUP sg ON m.group_id = sg.group_id
+             JOIN USER u ON mr.submitted_by = u.user_id
+             WHERE ts.tournament_id = ? AND UPPER(mr.status) = 'SUBMITTED'
+             ORDER BY mr.submitted_at ASC`,
+            [tournamentId]
+        );
+
+        // Fetch match participants for each pending result
+        const resultsWithParticipants = [];
+        for (const item of pendingResults) {
+            const [participants] = await db.promise().query(
+                `SELECT mp.registration_id, mp.side, tm.team_id, tm.team_name, tm.team_tag
+                 FROM MATCH_PARTICIPANT mp
+                 JOIN REGISTRATION r ON mp.registration_id = r.registration_id
+                 JOIN TEAM tm ON r.team_id = tm.team_id
+                 WHERE mp.match_id = ?
+                 ORDER BY mp.side ASC`,
+                [item.match_id]
+            );
+            resultsWithParticipants.push({
+                ...item,
+                participants: participants
+            });
+        }
+
+        return res.status(200).json({
+            pendingResults: resultsWithParticipants
+        });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({
+            error: "FAILED TO FETCH PENDING MATCH RESULTS",
+            code: "INTERNAL_SERVER_ERROR"
+        });
+    }
+});
+
+/**
  * POST /api/tournaments
  * Organizer-only. Creates a new tournament, always starting in "draft".
  * Validates game_id, format, timeline, and prize_pool_usd.
@@ -555,79 +629,6 @@ router.patch("/:id/status", requireAuth, requireRole("organizer"), (req, res) =>
             });
         });
     });
-});
-
-/**
- * GET /api/tournaments/:tournamentId/results/pending
- * Organizer-only endpoint to list pending match results awaiting review for a tournament.
- */
-router.get("/:tournamentId/results/pending", requireAuth, requireRole("organizer"), async (req, res) => {
-    const tournamentId = req.params.tournamentId;
-    const organizerId = req.session.userId;
-
-    try {
-        const [tournaments] = await db.promise().query(
-            `SELECT tournament_id, organizer_id FROM TOURNAMENT WHERE tournament_id = ?`,
-            [tournamentId]
-        );
-
-        if (tournaments.length === 0) {
-            return res.status(404).json({
-                error: "TOURNAMENT NOT FOUND",
-                code: "NOT_FOUND"
-            });
-        }
-
-        if (tournaments[0].organizer_id !== organizerId) {
-            return res.status(403).json({
-                error: "YOU DO NOT OWN THIS TOURNAMENT",
-                code: "FORBIDDEN"
-            });
-        }
-
-        const [pendingResults] = await db.promise().query(
-            `SELECT mr.result_id, mr.match_id, mr.submitted_by, mr.winning_registration_id,
-                    mr.team_a_kills, mr.team_b_kills, mr.evidence_url, mr.status, mr.submitted_at,
-                    u.username AS submitted_by_username,
-                    m.stage_id, ts.stage_name, m.group_id, sg.group_name
-             FROM MATCH_RESULT mr
-             JOIN \`MATCH\` m ON mr.match_id = m.match_id
-             JOIN TOURNAMENT_STAGE ts ON m.stage_id = ts.stage_id
-             JOIN STAGE_GROUP sg ON m.group_id = sg.group_id
-             JOIN USER u ON mr.submitted_by = u.user_id
-             WHERE ts.tournament_id = ? AND mr.status = 'SUBMITTED'
-             ORDER BY mr.submitted_at ASC`,
-            [tournamentId]
-        );
-
-        // Fetch match participants for each pending result
-        const resultsWithParticipants = [];
-        for (const item of pendingResults) {
-            const [participants] = await db.promise().query(
-                `SELECT mp.registration_id, mp.side, tm.team_id, tm.team_name, tm.team_tag
-                 FROM MATCH_PARTICIPANT mp
-                 JOIN REGISTRATION r ON mp.registration_id = r.registration_id
-                 JOIN TEAM tm ON r.team_id = tm.team_id
-                 WHERE mp.match_id = ?
-                 ORDER BY mp.side ASC`,
-                [item.match_id]
-            );
-            resultsWithParticipants.push({
-                ...item,
-                participants: participants
-            });
-        }
-
-        return res.status(200).json({
-            pendingResults: resultsWithParticipants
-        });
-    } catch (err) {
-        console.error(err);
-        return res.status(500).json({
-            error: "FAILED TO FETCH PENDING RESULTS",
-            code: "INTERNAL_SERVER_ERROR"
-        });
-    }
 });
 
 module.exports = router;

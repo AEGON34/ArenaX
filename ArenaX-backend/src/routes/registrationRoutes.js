@@ -144,7 +144,7 @@ router.get("/my", requireAuth, (req, res) => {
     const userId = req.session.userId;
 
     const sql = `
-        SELECT
+        SELECT DISTINCT
             r.registration_id,
             r.status,
             r.seed_number,
@@ -157,12 +157,14 @@ router.get("/my", requireAuth, (req, res) => {
         FROM REGISTRATION r
         JOIN TOURNAMENT t ON r.tournament_id = t.tournament_id
         JOIN TEAM tm ON r.team_id = tm.team_id
-        JOIN GAME_ACCOUNT ga ON tm.captain_id = ga.account_id
-        WHERE ga.user_id = ?
+        LEFT JOIN GAME_ACCOUNT ga ON tm.captain_id = ga.account_id
+        LEFT JOIN TEAM_MEMBER tmem ON tm.team_id = tmem.team_id AND tmem.role = 'captain'
+        LEFT JOIN GAME_ACCOUNT ga_mem ON tmem.game_account_id = ga_mem.account_id
+        WHERE ga.user_id = ? OR ga_mem.user_id = ?
         ORDER BY r.registered_at DESC
     `;
 
-    db.query(sql, [userId], (err, results) => {
+    db.query(sql, [userId, userId], (err, results) => {
         if (err) {
             console.error(err);
             return res.status(500).json({
@@ -340,9 +342,9 @@ function handleApproval(req, res, newStatus) {
             });
         }
 
-        if (registration.status !== "pending") {
+        if (registration.status === newStatus) {
             return res.status(400).json({
-                error: `REGISTRATION IS ALREADY '${registration.status}' AND CANNOT BE CHANGED`
+                error: `REGISTRATION IS ALREADY '${registration.status}'`
             });
         }
 

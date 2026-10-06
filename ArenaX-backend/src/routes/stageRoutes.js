@@ -164,11 +164,13 @@ router.get("/:stageId/groups", requireAuth, async (req, res) => {
 
         // Fetch matches if generated
         let matchesMap = new Map();
-        if (stage.group_generation_status === "matches_generated") {
+        if (["matches_generated", "qualified", "bracket_generated"].includes(stage.group_generation_status)) {
             const [matches] = await db.promise().query(
                 `SELECT m.match_id, m.stage_id, m.group_id, m.status, m.round_number, m.bracket_position,
-                        mp.registration_id, mp.side, tm.team_name, tm.team_tag
+                        mr.status AS result_status, mr.winning_registration_id, mr.evidence_url,
+                        mp.registration_id, r.team_id, mp.side, tm.team_name, tm.team_tag
                  FROM \`MATCH\` m
+                 LEFT JOIN MATCH_RESULT mr ON m.match_id = mr.match_id
                  LEFT JOIN MATCH_PARTICIPANT mp ON m.match_id = mp.match_id
                  LEFT JOIN REGISTRATION r ON mp.registration_id = r.registration_id
                  LEFT JOIN TEAM tm ON r.team_id = tm.team_id
@@ -183,6 +185,9 @@ router.get("/:stageId/groups", requireAuth, async (req, res) => {
                         match_id: row.match_id,
                         group_id: row.group_id,
                         status: row.status,
+                        result_status: row.result_status || null,
+                        winning_registration_id: row.winning_registration_id || null,
+                        evidence_url: row.evidence_url || null,
                         round_number: row.round_number,
                         bracket_position: row.bracket_position,
                         participants: []
@@ -191,6 +196,7 @@ router.get("/:stageId/groups", requireAuth, async (req, res) => {
                 if (row.registration_id) {
                     matchesMap.get(row.match_id).participants.push({
                         registration_id: row.registration_id,
+                        team_id: row.team_id,
                         team_name: row.team_name,
                         team_tag: row.team_tag,
                         side: row.side
@@ -229,6 +235,8 @@ router.get("/:stageId/groups", requireAuth, async (req, res) => {
 
         return res.status(200).json({
             stageId: Number(stageId),
+            tournamentId: stage.tournament_id,
+            tournament_id: stage.tournament_id,
             groupGenerationStatus: stage.group_generation_status,
             groups: formattedGroups
         });
@@ -882,6 +890,114 @@ router.put("/:stageId/groups/move", requireAuth, requireRole("organizer"), async
         console.error(err);
         return res.status(500).json({
             error: "FAILED TO MOVE MEMBER",
+            code: "INTERNAL_SERVER_ERROR"
+        });
+    } finally {
+        if (conn) conn.release();
+    }
+});
+
+/**
+ * DELETE /api/stages/:stageId/groups/members/:registrationId
+ * Organizer-only, owner-only. Removes a team from a stage group and sets registration status to 'rejected'.
+ * Allowed ONLY when group_generation_status = 'groups_assigned' and no matches exist.
+ */
+router.delete("/:stageId/groups/members/:registrationId", requireAuth, requireRole("organizer"), async (req, res) => {
+    const stageId = req.params.stageId;
+    const registrationId = req.params.registrationId;
+    const organizerId = req.session.userId;
+
+    let conn;
+    try {
+        conn = await db.promise().getConnection();
+        await conn.beginTransaction();
+
+        const [stages] = await conn.query(
+            `SELECT ts.stage_id, ts.tournament_id, ts.group_generation_status,
+                    t.organizer_id
+             FROM TOURNAMENT_STAGE ts
+             JOIN TOURNAMENT t ON ts.tournament_id = t.tournament_id
+             WHERE ts.stage_id = ? FOR UPDATE`,
+            [stageId]
+        );
+
+        if (stages.length === 0) {
+            await conn.rollback();
+            return res.status(404).json({
+                error: "STAGE NOT FOUND",
+                code: "NOT_FOUND"
+            });
+        }
+
+        const stage = stages[0];
+
+        if (stage.organizer_id !== organizerId) {
+            await conn.rollback();
+            return res.status(403).json({
+                error: "YOU DO NOT OWN THIS TOURNAMENT",
+                code: "FORBIDDEN"
+            });
+        }
+
+        if (stage.group_generation_status !== "groups_assigned") {
+            await conn.rollback();
+            return res.status(409).json({
+                error: "TEAMS CAN ONLY BE REMOVED WHILE GROUPS ARE IN GROUPS_ASSIGNED STATUS",
+                code: "STATE_CONFLICT"
+            });
+        }
+
+        const [matchCount] = await conn.query(
+            `SELECT COUNT(*) AS cnt FROM \`MATCH\` WHERE stage_id = ?`,
+            [stageId]
+        );
+
+        if (matchCount[0].cnt > 0) {
+            await conn.rollback();
+            return res.status(409).json({
+                error: "CANNOT REMOVE TEAM - MATCHES HAVE ALREADY BEEN GENERATED FOR THIS STAGE",
+                code: "STATE_CONFLICT"
+            });
+        }
+
+        // Verify registration is currently assigned to this stage
+        const [members] = await conn.query(
+            `SELECT member_id, group_id, slot_number FROM STAGE_GROUP_MEMBER WHERE stage_id = ? AND registration_id = ? FOR UPDATE`,
+            [stageId, registrationId]
+        );
+
+        if (members.length === 0) {
+            await conn.rollback();
+            return res.status(404).json({
+                error: "REGISTRATION IS NOT ASSIGNED TO A GROUP IN THIS STAGE",
+                code: "NOT_FOUND"
+            });
+        }
+
+        // Delete stage group member row
+        await conn.query(
+            `DELETE FROM STAGE_GROUP_MEMBER WHERE member_id = ?`,
+            [members[0].member_id]
+        );
+
+        // Reject registration and clear approved_at timestamp
+        await conn.query(
+            `UPDATE REGISTRATION SET status = 'rejected', approved_at = NULL WHERE registration_id = ?`,
+            [registrationId]
+        );
+
+        await conn.commit();
+
+        return res.status(200).json({
+            message: "TEAM REMOVED FROM GROUP AND REGISTRATION REJECTED SUCCESSFULLY",
+            stageId: Number(stageId),
+            registrationId: Number(registrationId)
+        });
+    } catch (err) {
+        if (conn) await conn.rollback();
+        console.error(err);
+        return res.status(500).json({
+            error: "FAILED TO REMOVE TEAM FROM GROUP",
             code: "INTERNAL_SERVER_ERROR"
         });
     } finally {
@@ -2406,8 +2522,10 @@ router.get("/:stageId/bracket", requireAuth, async (req, res) => {
 
         const [matches] = await db.promise().query(
             `SELECT m.match_id, m.stage_id, m.status, m.round_number, m.bracket_position, m.bracket_type,
+                    mr.status AS result_status, mr.winning_registration_id,
                     ms.best_of, ms.series_winner_registration_id
              FROM \`MATCH\` m
+             LEFT JOIN MATCH_RESULT mr ON m.match_id = mr.match_id
              LEFT JOIN MOBA_SERIES ms ON m.match_id = ms.match_id
              WHERE m.stage_id = ? AND m.bracket_type != 'group'
              ORDER BY m.bracket_type ASC, m.round_number ASC, m.bracket_position ASC`,
@@ -2451,6 +2569,8 @@ router.get("/:stageId/bracket", requireAuth, async (req, res) => {
             round_number: m.round_number,
             bracket_position: m.bracket_position,
             status: m.status,
+            result_status: m.result_status || null,
+            winning_registration_id: m.winning_registration_id || null,
             best_of: m.best_of || "BO1",
             participants: partsMap.get(m.match_id) || [],
             advancements: advMap.get(m.match_id) || []
@@ -2458,6 +2578,8 @@ router.get("/:stageId/bracket", requireAuth, async (req, res) => {
 
         return res.status(200).json({
             stageId: Number(stageId),
+            tournamentId: stage.tournament_id,
+            tournament_id: stage.tournament_id,
             groupGenerationStatus: stage.group_generation_status,
             bracket: {
                 playIn: formattedMatches.filter((m) => m.bracket_type === "play_in"),

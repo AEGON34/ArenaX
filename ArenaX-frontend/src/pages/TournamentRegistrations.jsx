@@ -194,7 +194,7 @@ function TournamentRegistrations() {
                         {isExpanded ? "Hide Roster" : "View Roster"} ({roster.length})
                       </button>
 
-                      {isPending && (
+                      {r.status === "pending" && (
                         <>
                           <button
                             onClick={() => handleDecision(r.registration_id, "approve")}
@@ -209,6 +209,26 @@ function TournamentRegistrations() {
                             REJECT
                           </button>
                         </>
+                      )}
+
+                      {r.status === "approved" && (
+                        <button
+                          onClick={() => handleDecision(r.registration_id, "reject")}
+                          className="rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-2 text-xs font-semibold text-red-400 hover:bg-red-500/20 transition"
+                          title="Revoke approval and reject this registration"
+                        >
+                          Reject
+                        </button>
+                      )}
+
+                      {r.status === "rejected" && (
+                        <button
+                          onClick={() => handleDecision(r.registration_id, "approve")}
+                          className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition"
+                          title="Re-approve this registration"
+                        >
+                          Approve
+                        </button>
                       )}
                     </div>
                   </div>
