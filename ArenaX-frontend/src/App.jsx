@@ -38,6 +38,16 @@ function App() {
         />
 
         <Route
+          path="/tournaments/:id/stages"
+          element={<TournamentStages />}
+        />
+
+        <Route
+          path="/tournaments/:id/registrations"
+          element={<TournamentRegistrations />}
+        />
+
+        <Route
           path="/my-tournaments"
           element={<MyTournaments />}
         />

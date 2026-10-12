@@ -135,8 +135,19 @@ function PlayoffBracketView({ stageId, tournamentId, onToast }) {
     const participants = m.participants || [];
     const sideA = participants.find((p) => p.side === "A");
     const sideB = participants.find((p) => p.side === "B");
-    const isCompleted = m.status === "completed";
+    const isCompleted = m.status === "completed" || m.result_status === "VERIFIED";
     const bestOf = m.best_of || "BO1";
+    const hasBothParticipants = Boolean(sideA && sideB);
+
+    const isCaptainOfMatch = (m.participants || []).some(
+      (p) =>
+        (p.team_id && myCaptainTeamIds.includes(Number(p.team_id))) ||
+        (p.registration_id && myCaptainRegIds.includes(Number(p.registration_id)))
+    );
+
+    const isPendingVerification =
+      m.result_status === "SUBMITTED" ||
+      m.status === "pending_verification";
 
     return (
       <div

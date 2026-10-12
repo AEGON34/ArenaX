@@ -1767,14 +1767,317 @@ router.get("/:stageId/groups/:groupId/standings", requireAuth, async (req, res) 
 });
 
 /**
- * Helper: Generate Double Elimination Playoff Bracket & BRACKET_ADVANCEMENT
+ * Helper: Generate Double Elimination Playoff Bracket for 4 Teams
  */
-async function generateDoubleEliminationBracket(conn, stageId, qualifiedTeams) {
-    const totalQual = qualifiedTeams.length;
-    let target = 16;
-    if (totalQual < 16 && totalQual >= 8) target = 8;
-    if (totalQual < 8 && totalQual >= 4) target = 4;
+async function generate4TeamBracket(conn, stageId, qualifiedTeams) {
+    const rank1Teams = qualifiedTeams.filter((t) => t.final_rank === 1);
+    const rank2Teams = qualifiedTeams.filter((t) => t.final_rank === 2);
 
+    for (let i = 0; i < rank1Teams.length; i++) {
+        await conn.query(
+            `UPDATE STAGE_GROUP_MEMBER SET playoff_seed = ?, bye_status = FALSE WHERE member_id = ?`,
+            [i + 1, rank1Teams[i].member_id]
+        );
+    }
+    for (let i = 0; i < rank2Teams.length; i++) {
+        await conn.query(
+            `UPDATE STAGE_GROUP_MEMBER SET playoff_seed = ?, bye_status = FALSE WHERE member_id = ?`,
+            [rank1Teams.length + i + 1, rank2Teams[i].member_id]
+        );
+    }
+
+    // Upper Round 1 Match 1 (Upper Semifinal 1)
+    const [ubR1M1Res] = await conn.query(
+        `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+         VALUES (?, 'scheduled', 1, 1, 'upper')`,
+        [stageId]
+    );
+    const ubR1M1 = ubR1M1Res.insertId;
+    await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO1')`, [ubR1M1]);
+
+    if (rank1Teams[0]) {
+        await conn.query(
+            `INSERT INTO MATCH_PARTICIPANT (match_id, registration_id, side) VALUES (?, ?, 'A')`,
+            [ubR1M1, rank1Teams[0].registration_id]
+        );
+    }
+    const opp1 = rank2Teams.length > 1 ? rank2Teams[1] : rank2Teams[0];
+    if (opp1) {
+        await conn.query(
+            `INSERT INTO MATCH_PARTICIPANT (match_id, registration_id, side) VALUES (?, ?, 'B')`,
+            [ubR1M1, opp1.registration_id]
+        );
+    }
+
+    // Upper Round 1 Match 2 (Upper Semifinal 2)
+    const [ubR1M2Res] = await conn.query(
+        `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+         VALUES (?, 'scheduled', 1, 2, 'upper')`,
+        [stageId]
+    );
+    const ubR1M2 = ubR1M2Res.insertId;
+    await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO1')`, [ubR1M2]);
+
+    if (rank1Teams[1]) {
+        await conn.query(
+            `INSERT INTO MATCH_PARTICIPANT (match_id, registration_id, side) VALUES (?, ?, 'A')`,
+            [ubR1M2, rank1Teams[1].registration_id]
+        );
+    }
+    const opp2 = rank2Teams[0];
+    if (opp2) {
+        await conn.query(
+            `INSERT INTO MATCH_PARTICIPANT (match_id, registration_id, side) VALUES (?, ?, 'B')`,
+            [ubR1M2, opp2.registration_id]
+        );
+    }
+
+    // Upper Round 2 (Upper Final)
+    const [ubFinalRes] = await conn.query(
+        `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+         VALUES (?, 'scheduled', 2, 1, 'upper')`,
+        [stageId]
+    );
+    const ubFinal = ubFinalRes.insertId;
+    await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO3')`, [ubFinal]);
+
+    await conn.query(
+        `INSERT INTO BRACKET_ADVANCEMENT (source_match_id, destination_match_id, outcome_type, destination_side)
+         VALUES (?, ?, 'winner', 'A'), (?, ?, 'winner', 'B')`,
+        [ubR1M1, ubFinal, ubR1M2, ubFinal]
+    );
+
+    // Lower Round 1 (Lower Semifinal)
+    const [lbR1Res] = await conn.query(
+        `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+         VALUES (?, 'scheduled', 1, 1, 'lower')`,
+        [stageId]
+    );
+    const lbR1 = lbR1Res.insertId;
+    await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO1')`, [lbR1]);
+
+    await conn.query(
+        `INSERT INTO BRACKET_ADVANCEMENT (source_match_id, destination_match_id, outcome_type, destination_side)
+         VALUES (?, ?, 'loser', 'A'), (?, ?, 'loser', 'B')`,
+        [ubR1M1, lbR1, ubR1M2, lbR1]
+    );
+
+    // Lower Round 2 (Lower Final)
+    const [lbFinalRes] = await conn.query(
+        `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+         VALUES (?, 'scheduled', 2, 1, 'lower')`,
+        [stageId]
+    );
+    const lbFinal = lbFinalRes.insertId;
+    await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO3')`, [lbFinal]);
+
+    await conn.query(
+        `INSERT INTO BRACKET_ADVANCEMENT (source_match_id, destination_match_id, outcome_type, destination_side)
+         VALUES (?, ?, 'winner', 'A'), (?, ?, 'loser', 'B')`,
+        [lbR1, lbFinal, ubFinal, lbFinal]
+    );
+
+    // Grand Final (Round 3)
+    const [gfRes] = await conn.query(
+        `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+         VALUES (?, 'scheduled', 3, 1, 'grand_final')`,
+        [stageId]
+    );
+    const gfMatch = gfRes.insertId;
+    await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO5')`, [gfMatch]);
+
+    await conn.query(
+        `INSERT INTO BRACKET_ADVANCEMENT (source_match_id, destination_match_id, outcome_type, destination_side)
+         VALUES (?, ?, 'winner', 'A'), (?, ?, 'winner', 'B')`,
+        [ubFinal, gfMatch, lbFinal, gfMatch]
+    );
+
+    return {
+        playInMatchesCount: 0,
+        upperMatchesCount: 3,
+        lowerMatchesCount: 2,
+        grandFinalMatchId: gfMatch
+    };
+}
+
+/**
+ * Helper: Generate Double Elimination Playoff Bracket for 8 Teams
+ */
+async function generate8TeamBracket(conn, stageId, qualifiedTeams) {
+    const rank1Teams = qualifiedTeams.filter((t) => t.final_rank === 1);
+    const rank2Teams = qualifiedTeams.filter((t) => t.final_rank === 2);
+
+    for (let i = 0; i < rank1Teams.length; i++) {
+        await conn.query(
+            `UPDATE STAGE_GROUP_MEMBER SET playoff_seed = ?, bye_status = FALSE WHERE member_id = ?`,
+            [i + 1, rank1Teams[i].member_id]
+        );
+    }
+    for (let i = 0; i < rank2Teams.length; i++) {
+        await conn.query(
+            `UPDATE STAGE_GROUP_MEMBER SET playoff_seed = ?, bye_status = FALSE WHERE member_id = ?`,
+            [rank1Teams.length + i + 1, rank2Teams[i].member_id]
+        );
+    }
+
+    // Upper Round 1 (Quarterfinals: 4 matches, BO1)
+    const upperR1Matches = [];
+    for (let i = 0; i < 4; i++) {
+        const [mRes] = await conn.query(
+            `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+             VALUES (?, 'scheduled', 1, ?, 'upper')`,
+            [stageId, i + 1]
+        );
+        const mId = mRes.insertId;
+        await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO1')`, [mId]);
+
+        if (rank1Teams[i]) {
+            await conn.query(
+                `INSERT INTO MATCH_PARTICIPANT (match_id, registration_id, side) VALUES (?, ?, 'A')`,
+                [mId, rank1Teams[i].registration_id]
+            );
+        }
+        const r2Index = 3 - i;
+        if (rank2Teams[r2Index]) {
+            await conn.query(
+                `INSERT INTO MATCH_PARTICIPANT (match_id, registration_id, side) VALUES (?, ?, 'B')`,
+                [mId, rank2Teams[r2Index].registration_id]
+            );
+        }
+        upperR1Matches.push(mId);
+    }
+
+    // Upper Round 2 (Semifinals: 2 matches, BO3)
+    const upperSFMatches = [];
+    for (let i = 0; i < 2; i++) {
+        const [mRes] = await conn.query(
+            `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+             VALUES (?, 'scheduled', 2, ?, 'upper')`,
+            [stageId, i + 1]
+        );
+        const mId = mRes.insertId;
+        await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO3')`, [mId]);
+        upperSFMatches.push(mId);
+
+        await conn.query(
+            `INSERT INTO BRACKET_ADVANCEMENT (source_match_id, destination_match_id, outcome_type, destination_side)
+             VALUES (?, ?, 'winner', 'A'), (?, ?, 'winner', 'B')`,
+            [upperR1Matches[i * 2], mId, upperR1Matches[i * 2 + 1], mId]
+        );
+    }
+
+    // Upper Round 3 (Upper Final: 1 match, BO3)
+    const [ubFinalRes] = await conn.query(
+        `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+         VALUES (?, 'scheduled', 3, 1, 'upper')`,
+        [stageId]
+    );
+    const upperFinalMatch = ubFinalRes.insertId;
+    await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO3')`, [upperFinalMatch]);
+
+    await conn.query(
+        `INSERT INTO BRACKET_ADVANCEMENT (source_match_id, destination_match_id, outcome_type, destination_side)
+         VALUES (?, ?, 'winner', 'A'), (?, ?, 'winner', 'B')`,
+        [upperSFMatches[0], upperFinalMatch, upperSFMatches[1], upperFinalMatch]
+    );
+
+    // Lower Round 1 (2 matches, BO1)
+    const lowerR1Matches = [];
+    for (let i = 0; i < 2; i++) {
+        const [mRes] = await conn.query(
+            `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+             VALUES (?, 'scheduled', 1, ?, 'lower')`,
+            [stageId, i + 1]
+        );
+        const mId = mRes.insertId;
+        await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO1')`, [mId]);
+        lowerR1Matches.push(mId);
+
+        await conn.query(
+            `INSERT INTO BRACKET_ADVANCEMENT (source_match_id, destination_match_id, outcome_type, destination_side)
+             VALUES (?, ?, 'loser', 'A'), (?, ?, 'loser', 'B')`,
+            [upperR1Matches[i * 2], mId, upperR1Matches[i * 2 + 1], mId]
+        );
+    }
+
+    // Lower Round 2 (2 matches, BO1)
+    const lowerR2Matches = [];
+    for (let i = 0; i < 2; i++) {
+        const [mRes] = await conn.query(
+            `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+             VALUES (?, 'scheduled', 2, ?, 'lower')`,
+            [stageId, i + 1]
+        );
+        const mId = mRes.insertId;
+        await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO1')`, [mId]);
+        lowerR2Matches.push(mId);
+
+        await conn.query(
+            `INSERT INTO BRACKET_ADVANCEMENT (source_match_id, destination_match_id, outcome_type, destination_side)
+             VALUES (?, ?, 'winner', 'A'), (?, ?, 'loser', 'B')`,
+            [lowerR1Matches[i], mId, upperSFMatches[1 - i], mId]
+        );
+    }
+
+    // Lower Round 3 (Lower Semifinal: 1 match, BO1)
+    const [lbR3Res] = await conn.query(
+        `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+         VALUES (?, 'scheduled', 3, 1, 'lower')`,
+        [stageId]
+    );
+    const lowerR3Match = lbR3Res.insertId;
+    await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO1')`, [lowerR3Match]);
+
+    await conn.query(
+        `INSERT INTO BRACKET_ADVANCEMENT (source_match_id, destination_match_id, outcome_type, destination_side)
+         VALUES (?, ?, 'winner', 'A'), (?, ?, 'winner', 'B')`,
+        [lowerR2Matches[0], lowerR3Match, lowerR2Matches[1], lowerR3Match]
+    );
+
+    // Lower Round 4 (Lower Final: 1 match, BO3)
+    const [lbFinalRes] = await conn.query(
+        `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+         VALUES (?, 'scheduled', 4, 1, 'lower')`,
+        [stageId]
+    );
+    const lowerFinalMatch = lbFinalRes.insertId;
+    await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO3')`, [lowerFinalMatch]);
+
+    await conn.query(
+        `INSERT INTO BRACKET_ADVANCEMENT (source_match_id, destination_match_id, outcome_type, destination_side)
+         VALUES (?, ?, 'winner', 'A'), (?, ?, 'loser', 'B')`,
+        [lowerR3Match, lowerFinalMatch, upperFinalMatch, lowerFinalMatch]
+    );
+
+    // Grand Final (Round 5)
+    const [gfRes] = await conn.query(
+        `INSERT INTO \`MATCH\` (stage_id, status, round_number, bracket_position, bracket_type)
+         VALUES (?, 'scheduled', 5, 1, 'grand_final')`,
+        [stageId]
+    );
+    const grandFinalMatch = gfRes.insertId;
+    await conn.query(`INSERT INTO MOBA_SERIES (match_id, best_of) VALUES (?, 'BO5')`, [grandFinalMatch]);
+
+    await conn.query(
+        `INSERT INTO BRACKET_ADVANCEMENT (source_match_id, destination_match_id, outcome_type, destination_side)
+         VALUES (?, ?, 'winner', 'A'), (?, ?, 'winner', 'B')`,
+        [upperFinalMatch, grandFinalMatch, lowerFinalMatch, grandFinalMatch]
+    );
+
+    return {
+        playInMatchesCount: 0,
+        upperMatchesCount: 7,
+        lowerMatchesCount: 6,
+        grandFinalMatchId: grandFinalMatch
+    };
+}
+
+/**
+ * Helper: Generate Double Elimination Playoff Bracket for 16 or 24 Teams (with optional Play-In)
+ */
+async function generate16Or24TeamBracket(conn, stageId, qualifiedTeams) {
+    const totalQual = qualifiedTeams.length;
+    const target = 16;
     const playInCount = totalQual > target ? totalQual - target : 0;
     const byeCount = playInCount > 0 ? 2 * target - totalQual : totalQual;
 
@@ -2068,6 +2371,23 @@ async function generateDoubleEliminationBracket(conn, stageId, qualifiedTeams) {
         lowerMatchesCount: lowerR1Matches.length + lowerR2Matches.length + lowerR3Matches.length + lowerR4Matches.length + 1 + 1,
         grandFinalMatchId: grandFinalMatch
     };
+}
+
+/**
+ * Main dispatcher: Generate Double Elimination Playoff Bracket
+ */
+async function generateDoubleEliminationBracket(conn, stageId, qualifiedTeams) {
+    // Clean up any existing playoff matches for this stage to ensure clean generation
+    await conn.query("DELETE FROM `MATCH` WHERE stage_id = ? AND bracket_type != 'group'", [stageId]);
+
+    const totalQual = qualifiedTeams.length;
+    if (totalQual <= 4) {
+        return await generate4TeamBracket(conn, stageId, qualifiedTeams);
+    }
+    if (totalQual <= 8) {
+        return await generate8TeamBracket(conn, stageId, qualifiedTeams);
+    }
+    return await generate16Or24TeamBracket(conn, stageId, qualifiedTeams);
 }
 
 /**

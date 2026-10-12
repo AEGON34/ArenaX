@@ -113,12 +113,21 @@ function TournamentRegistrations() {
       )}
 
       <main className="mx-auto max-w-4xl w-full px-6 py-16 flex-1">
-        <Link
-          to="/my-tournaments"
-          className="text-sm font-semibold text-zinc-400 hover:text-white transition"
-        >
-          &larr; Back to My Tournaments
-        </Link>
+        <div className="flex items-center gap-4 text-sm font-semibold text-zinc-400">
+          <Link
+            to={`/tournaments/${id}`}
+            className="hover:text-white transition"
+          >
+            &larr; Back to Tournament
+          </Link>
+          <span>•</span>
+          <Link
+            to="/my-tournaments"
+            className="hover:text-white transition"
+          >
+            My Tournaments
+          </Link>
+        </div>
 
         <div className="mt-4 mb-8">
           <h1 className="text-3xl font-black text-white">
